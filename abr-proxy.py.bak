@@ -1,0 +1,196 @@
+"""
+Iran Forward Proxy — Python fallback
+Deployed on Iranian VPS (94.139.188.22:80)
+
+If Bun cannot be installed, this Python script provides the same
+reverse proxy functionality using only stdlib (no pip packages needed).
+
+Run: python3 iran-forward.py
+"""
+
+import http.server
+import urllib.request
+import urllib.error
+import os
+import sys
+import ssl
+import base64
+import re
+import urllib.parse
+import json
+
+TARGET = os.environ.get("ABR_TARGET", "https://abrout.com")
+PORT = int(os.environ.get("PORT", "3000"))
+HOST = os.environ.get("HOST", "0.0.0.0")
+
+# Resolve brand per hostname for multi-domain subscription reselling.
+# DEFAULT_BRAND env var — fallback for unknown hosts.
+# HOST_BRAND_MAP env var — JSON dict of hostname→brand to override/add.
+DEFAULT_BRAND = os.environ.get("DEFAULT_BRAND", "BetInj")
+_HBM_RAW = os.environ.get("HOST_BRAND_MAP", "")
+HOST_BRAND_MAP = {}
+if _HBM_RAW.strip():
+    try:
+        HOST_BRAND_MAP.update(json.loads(_HBM_RAW))
+    except json.JSONDecodeError:
+        print(f"Invalid HOST_BRAND_MAP JSON: {_HBM_RAW}", file=sys.stderr)
+
+# Built-in domain→brand defaults (overridable by HOST_BRAND_MAP env var)
+HOST_BRAND_MAP.setdefault("betinj.com", "BetInj")
+HOST_BRAND_MAP.setdefault("www.betinj.com", "BetInj")
+HOST_BRAND_MAP.setdefault("nodealer.io", "NodeAl")
+HOST_BRAND_MAP.setdefault("www.nodealer.io", "NodeAl")
+
+# Unverified SSL context — the VPS may not have up-to-date CA certs
+SSL_CONTEXT = ssl.create_default_context()
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+
+def _resolve_brand(host: str) -> str:
+    """Map request Host header to subscription brand name."""
+    return HOST_BRAND_MAP.get(host.split(":")[0], DEFAULT_BRAND)
+
+def _transform_subscription(data: bytes, brand: str) -> bytes | None:
+    """Decode base64 subscription, ensure every config has a branded #name.
+
+    Returns rewritten base64 bytes, or None if data is not a valid subscription
+    (passes through unchanged).
+    """
+    try:
+        text = base64.b64decode(data).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    lines = text.split("\n")
+    url_lines = [l for l in lines if l.strip()]
+    if not url_lines:
+        return None
+
+    # Verify every non-empty line looks like a proxy URL
+    proxy_re = re.compile(r"^[a-z]+://")
+    if not all(proxy_re.match(l.strip()) for l in url_lines):
+        return None
+
+    def _brand_name(name: str) -> str:
+        """Apply brand and ensure non-empty name."""
+        decoded = urllib.parse.unquote(name)
+        decoded = decoded.replace("BetInja", brand)
+        if not decoded.strip():
+            decoded = brand
+        return decoded
+
+    transformed = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            transformed.append("")
+            continue
+
+        # Partition on first # to separate base URL from name fragment
+        base_part, sep, raw_name = stripped.partition("#")
+        if not sep:
+            # No name at all — inject one
+            transformed.append(f"{stripped}#{brand}")
+        else:
+            name = _brand_name(raw_name)
+            transformed.append(f"{base_part}#{urllib.parse.quote(name)}")
+
+    return base64.b64encode("\n".join(transformed).encode("utf-8"))
+
+
+class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self._proxy("GET")
+
+    def do_POST(self):
+        self._proxy("POST")
+
+    def do_PUT(self):
+        self._proxy("PUT")
+
+    def do_DELETE(self):
+        self._proxy("DELETE")
+
+    def do_PATCH(self):
+        self._proxy("PATCH")
+
+    def do_HEAD(self):
+        self._proxy("HEAD")
+
+    def do_OPTIONS(self):
+        self._proxy("OPTIONS")
+
+    def _proxy(self, method):
+        # Healthcheck
+        if self.path in ("/", "/health"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+
+        target_url = f"{TARGET}{self.path}"
+
+        # Read request body if present
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        # Build upstream request
+        req = urllib.request.Request(
+            target_url,
+            data=body,
+            method=method,
+        )
+
+        # Forward headers (skip hop-by-hop)
+        skip_headers = {"host", "connection", "keep-alive", "transfer-encoding"}
+        for key, value in self.headers.items():
+            if key.lower() not in skip_headers:
+                req.add_header(key, value)
+
+        req.add_header("Host", urllib.parse.urlparse(TARGET).hostname)
+
+        try:
+            resp = urllib.request.urlopen(req, context=SSL_CONTEXT, timeout=60)
+            self.send_response(resp.status)
+            # Forward response headers
+            for key, value in resp.headers.items():
+                if key.lower() not in ("transfer-encoding", "connection", "keep-alive"):
+                    self.send_header(key, value)
+            self.end_headers()
+
+            resp_body = resp.read()
+
+            # Transform subscription data to inject branded names per domain
+            if self.path.startswith("/sub/"):
+                host = self.headers.get("Host", "")
+                brand = _resolve_brand(host.strip())
+                transformed = _transform_subscription(resp_body, brand)
+                if transformed is not None:
+                    resp_body = transformed
+
+            self.wfile.write(resp_body)
+        except urllib.error.HTTPError as e:
+            self.send_response(e.code)
+            self.end_headers()
+            self.wfile.write(e.read())
+        except Exception as e:
+            print(f"Proxy error {self.path}: {e}", file=sys.stderr)
+            self.send_response(502)
+            self.end_headers()
+            self.wfile.write(b"Bad Gateway")
+
+    def log_message(self, format, *args):
+        print(f"{self.client_address[0]} - {format % args}")
+
+
+if __name__ == "__main__":
+    server = http.server.HTTPServer((HOST, PORT), ProxyHandler)
+    print(f"🔄 Abr Outbound reverse proxy → {TARGET}")
+    print(f"📍 Listening on http://{HOST}:{PORT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        server.server_close()

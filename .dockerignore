@@ -1,0 +1,7 @@
+.git
+.omp-mem*
+banks
+mnemopi.db*
+abr-proxy.py
+abr-proxy.py.bak
+node_modules

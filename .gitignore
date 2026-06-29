@@ -1,0 +1,6 @@
+node_modules
+.omp-mem*
+banks/
+mnemopi.db*
+*.db-shm
+*.db-wal

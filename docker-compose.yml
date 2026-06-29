@@ -1,0 +1,18 @@
+services:
+  abr-proxy:
+    build: .
+    restart: unless-stopped
+    environment:
+      ABR_TARGET: https://abrout.com
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DEFAULT_BRAND: Bet Inja
+      HOST_BRAND_MAP: '{"betinjabestfriends.com":"Bet Inja","www.betinjabestfriends.com":"Bet Inja"}'
+    expose:
+      - "3000"
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new hexa 'echo CONNECTED; uname -a; cat /etc/os-release 2>/dev/null | head -3; echo \"---\"; nproc; free -h | head -2; echo \"---PORTS---\"; ss -tlnp 2>/dev/null | grep -E \":80 |:443 \" || echo \"80/443 free\"; echo \"---DOCKER---\"; docker --version 2>/dev/null || echo \"no docker\"; echo \"---CADDY---\"; which caddy nginx 2>/dev/null || echo \"no caddy/nginx\"')",
+      "Bash(ssh hexa 'set -e *)",
+      "Bash(ssh hexa *)",
+      "Bash(scp hexa:/opt/abr-proxy.py ./abr-proxy.py)",
+      "Bash(scp ./abr-proxy.py hexa:/opt/abr-proxy.py)"
+    ]
+  }
+}
