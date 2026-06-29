@@ -39,6 +39,9 @@ app.all("/*", async (c) => {
   const headers = new Headers(c.req.raw.headers);
   for (const h of HOP_BY_HOP_REQ) headers.delete(h);
   headers.set("Host", UPSTREAM_HOSTNAME);
+  if (incomingUrl.pathname.startsWith("/sub/")) {
+    headers.set("Accept-Encoding", "identity");
+  }
 
   const fetchOpts: Record<string, unknown> = {
     method: c.req.method,
@@ -82,6 +85,8 @@ app.all("/*", async (c) => {
           transformed.byteOffset + transformed.byteLength,
         );
       }
+      respHeaders.delete("content-encoding");
+      respHeaders.set("content-length", String(body.byteLength));
       return new Response(body, {
         status: resp.status,
         statusText: resp.statusText,
