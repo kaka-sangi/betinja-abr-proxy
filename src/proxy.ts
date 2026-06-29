@@ -71,6 +71,8 @@ app.all("/*", async (c) => {
     // /sub/ paths need body buffering for base64 brand transformation
     if (incomingUrl.pathname.startsWith("/sub/")) {
       let body: ArrayBuffer = await resp.arrayBuffer();
+      respHeaders.delete("content-length");
+      respHeaders.delete("content-encoding");
       const host = c.req.header("host") || "";
       const brand = resolveBrand(host.split(":")[0]);
       const transformed = transformSubscription(new Uint8Array(body), brand);
